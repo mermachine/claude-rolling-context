@@ -1,0 +1,31 @@
+{
+  "name": "claude-rolling-context",
+  "version": "0.1.0",
+  "description": "Rolling context and custom compaction for the Claude Agent SDK",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepare": "npm run build"
+  },
+  "peerDependencies": {
+    "@anthropic-ai/claude-agent-sdk": ">=0.2.49"
+  },
+  "devDependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.49",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  },
+  "license": "MIT"
+}
