@@ -12,7 +12,7 @@ import type {
   SdkOptions,
 } from './types.js';
 import { ContextManager, estimateTurnGroupTokens } from './context-manager.js';
-import { SdkBridge, processMessages } from './sdk-bridge.js';
+import { SdkBridge, processMessages, type ImageAttachment } from './sdk-bridge.js';
 import { appendEvent, loadMetaSession, listSessions, getSdkSessionJsonlPath, countFileLines, readLinesFrom, writeTransplantedJsonl, turnGroupToJsonlLines } from './storage.js';
 import { performCompaction } from './compaction.js';
 
@@ -227,7 +227,7 @@ export class MetaSession {
    * Send a message. Yields session events as they stream back.
    * Compaction happens transparently if the context threshold is exceeded.
    */
-  async *send(message: string): AsyncGenerator<SessionEvent> {
+  async *send(message: string, images?: ImageAttachment[]): AsyncGenerator<SessionEvent> {
     // Check if we should compact before sending
     if (
       this.state.turnGroups.length > 0 &&
@@ -237,7 +237,7 @@ export class MetaSession {
       )
     ) {
       yield { type: 'compaction', phase: 'started' };
-      yield* this.doCompaction(message);
+      yield* this.doCompaction(message, images);
       return;
     }
 
@@ -256,12 +256,12 @@ export class MetaSession {
           t.rawJsonl ?? turnGroupToJsonlLines(t, newSessionId, this.cwd())
         );
         writeTransplantedJsonl(this.cwd(), newSessionId, allRawLines, coldSummary);
-        const session = await this.bridge.resumeSession(newSessionId, message);
+        const session = await this.bridge.resumeSession(newSessionId, message, images);
         sessionId = session.sessionId;
         messages = session.messages;
         this._activeQuery = session.query;
       } else {
-        const session = await this.bridge.startSession(message);
+        const session = await this.bridge.startSession(message, images);
         sessionId = session.sessionId;
         messages = session.messages;
         this._activeQuery = session.query;
@@ -280,13 +280,14 @@ export class MetaSession {
       const session = await this.bridge.resumeSession(
         this.state.activeSdkSessionId,
         message,
+        images,
       );
       sessionId = session.sessionId;
       messages = session.messages;
       this._activeQuery = session.query;
     }
 
-    yield* this.collectTurnGroup(sessionId, message, messages);
+    yield* this.collectTurnGroup(sessionId, message, messages, images);
   }
 
   /**
@@ -335,7 +336,7 @@ export class MetaSession {
 
   // ── Private methods ──
 
-  private async *doCompaction(nextMessage: string): AsyncGenerator<SessionEvent> {
+  private async *doCompaction(nextMessage: string, images?: ImageAttachment[]): AsyncGenerator<SessionEvent> {
     this.contextManager.classifyZones(this.state.turnGroups, this.state.compactions);
 
     yield { type: 'compaction', phase: 'summarizing' };
@@ -373,7 +374,7 @@ export class MetaSession {
     );
     writeTransplantedJsonl(this.cwd(), newSessionId, allRawLines, coldSummary);
 
-    const newSession = await this.bridge.resumeSession(newSessionId, nextMessage);
+    const newSession = await this.bridge.resumeSession(newSessionId, nextMessage, images);
 
     const newRecord: SdkSessionRecord = {
       sessionId: newSession.sessionId,
@@ -388,17 +389,34 @@ export class MetaSession {
 
     yield { type: 'compaction', phase: 'completed' };
 
-    yield* this.collectTurnGroup(newSession.sessionId, nextMessage, newSession.messages);
+    yield* this.collectTurnGroup(newSession.sessionId, nextMessage, newSession.messages, images);
   }
 
   private async *collectTurnGroup(
     sessionId: string,
     userInput: string,
     messages: AsyncGenerator<any, void>,
+    images?: ImageAttachment[],
   ): AsyncGenerator<SessionEvent> {
     // Snapshot SDK JSONL line count before this turn
     const sdkJsonlPath = getSdkSessionJsonlPath(this.cwd(), sessionId);
     const linesBefore = countFileLines(sdkJsonlPath);
+
+    // Build user content — multimodal if images attached
+    let userContent: any = userInput;
+    if (images && images.length > 0) {
+      const blocks: any[] = [];
+      if (userInput) {
+        blocks.push({ type: 'text', text: userInput });
+      }
+      for (const img of images) {
+        blocks.push({
+          type: 'image',
+          source: { type: 'base64', data: img.data, media_type: img.mimeType },
+        });
+      }
+      userContent = blocks;
+    }
 
     const turnGroup: TurnGroup = {
       id: randomUUID(),
@@ -406,7 +424,7 @@ export class MetaSession {
       index: this.turnIndex++,
       userMessage: {
         type: 'user',
-        message: { role: 'user', content: userInput },
+        message: { role: 'user', content: userContent },
         parent_tool_use_id: null,
         session_id: sessionId,
       },

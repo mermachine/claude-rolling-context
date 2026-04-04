@@ -48,6 +48,12 @@ for await (const event of session.send('Now do something else')) {
 - Keep `compactionThreshold` at 0.8 or below. The SDK has its own auto-compaction at ~95% that we can't control — staying well below it avoids conflicts.
 - Sessions persist to `~/.meta-sessions/` by default. Set `logDir: null` for ephemeral sessions.
 
+### Agent SDK versioning
+
+The Claude Agent SDK (`@anthropic-ai/claude-agent-sdk`) is bundled inside the Claude Code binary. It updates when Claude Code updates — there's no separate release channel. claude-rolling-context declares it as a peer dependency (`>=0.2.49`) so it resolves to whatever version ships with your Claude Code installation.
+
+The areas most sensitive to SDK changes are the `query()` API and `Options` type (passed through from `MetaSessionOptions`) and `SDKMessage` subtypes (parsed to produce `SessionEvent`s). If a future SDK update breaks something, pin to a known-good version in your project until claude-rolling-context catches up.
+
 ## API
 
 ### `new MetaSession(options)`
@@ -70,9 +76,22 @@ Creates a new session (or resumes an existing one).
 
 All [Agent SDK `Options`](https://docs.anthropic.com/en/docs/agent-sdk) fields are accepted and forwarded.
 
-### `session.send(message): AsyncGenerator<SessionEvent>`
+### `session.send(message, images?): AsyncGenerator<SessionEvent>`
 
-Send a message and stream back events. Compaction runs transparently if the context threshold is exceeded.
+Send a message and stream back events. Compaction runs transparently if the context threshold is exceeded. Optionally attach images for multimodal messages.
+
+```ts
+import type { ImageAttachment } from 'claude-rolling-context'
+
+const screenshot: ImageAttachment = {
+  data: fs.readFileSync('screenshot.png').toString('base64'),
+  mimeType: 'image/png',
+}
+
+for await (const event of session.send('What do you see?', [screenshot])) {
+  if (event.type === 'stream_text') process.stdout.write(event.text)
+}
+```
 
 ```ts
 for await (const event of session.send('Explain this codebase')) {

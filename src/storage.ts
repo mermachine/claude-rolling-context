@@ -23,7 +23,7 @@ const SDK_PROJECTS_DIR = join(homedir(), '.claude', 'projects');
  * where sanitized-cwd replaces '/' with '-'.
  */
 export function getSdkSessionJsonlPath(cwd: string, sessionId: string): string {
-  const sanitized = cwd.replace(/\//g, '-');
+  const sanitized = cwd.replace(/[/.]/g, '-');
   return join(SDK_PROJECTS_DIR, sanitized, `${sessionId}.jsonl`);
 }
 
@@ -167,7 +167,7 @@ export function writeTransplantedJsonl(
   rawLines: string[],
   coldSummary?: string,
 ): string {
-  const sanitized = cwd.replace(/\//g, '-');
+  const sanitized = cwd.replace(/[/.]/g, '-');
   const dir = join(SDK_PROJECTS_DIR, sanitized);
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
@@ -218,13 +218,41 @@ export function writeTransplantedJsonl(
     rootParentUuid = summary.lastUuid;
   }
 
+  // Track the last UUID we've emitted so orphan roots chain to the
+  // previous turn, building a continuous parent chain across turn groups.
+  let lastEmittedUuid: string | null = rootParentUuid;
+
   for (const parsed of parsedLines) {
     parsed.sessionId = newSessionId;
     parsed.timestamp = iso(eventOffsetMs++);
 
+    // Preserve existing intra-history parent links, but re-anchor roots
+    // that point outside the transplanted set to the previous emitted turn.
     const parentUuid = typeof parsed.parentUuid === 'string' ? parsed.parentUuid : null;
     if (parentUuid === null || !includedUuids.has(parentUuid)) {
-      parsed.parentUuid = rootParentUuid;
+      parsed.parentUuid = lastEmittedUuid;
+    }
+
+    // Guard against empty user content — the Anthropic API rejects it.
+    // Can happen with image-only messages from claude.ai imports.
+    if (parsed.type === 'user') {
+      const msg = parsed.message;
+      if (msg) {
+        const content = msg.content;
+        const isEmpty = typeof content === 'string'
+          ? !content.trim()
+          : Array.isArray(content) && (content as any[]).every(
+              (b: any) => b.type === 'text' && !(b.text ?? '').trim()
+            );
+        if (isEmpty) {
+          msg.content = '[empty]';
+        }
+      }
+    }
+
+    // Track this UUID as the latest in the chain
+    if (typeof parsed.uuid === 'string') {
+      lastEmittedUuid = parsed.uuid;
     }
 
     output.push(JSON.stringify(parsed));

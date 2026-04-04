@@ -19,6 +19,9 @@ export type {
   SdkOptions,
 } from './types.js';
 
+// Image support
+export type { ImageAttachment } from './sdk-bridge.js';
+
 // Utilities that consumers might find useful
 export { estimateTokens, contentBlocksToText } from './context-manager.js';
 export { DEFAULT_COMPACTION_PROMPT } from './prompts/index.js';

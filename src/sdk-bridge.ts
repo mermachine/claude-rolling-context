@@ -4,6 +4,7 @@ import type {
   Options,
   SDKMessage,
   SDKAssistantMessage,
+  SDKUserMessage,
   SDKSystemMessage,
   SDKResultMessage,
   SDKPartialAssistantMessage,
@@ -12,11 +13,18 @@ import type {
   HookCallback,
   PreCompactHookInput,
 } from '@anthropic-ai/claude-agent-sdk';
+import type { ImageBlockParam, TextBlockParam } from '@anthropic-ai/sdk/resources/messages/messages';
 import type {
   SdkSessionId,
   SessionEvent,
   SdkOptions,
 } from './types.js';
+
+/** Image attachment for multimodal messages */
+export interface ImageAttachment {
+  data: string;
+  mimeType: string;
+}
 
 /**
  * Internal display event used to pass both the public event and raw SDK message
@@ -37,6 +45,18 @@ const preCompactHook: HookCallback = async (input) => {
   }
   return {};
 };
+
+/**
+ * Resolve model ID for the Agent SDK. The SDK uses `[1m]` suffix to signal
+ * 1M context window — without it, it defaults to 200k and auto-compacts early.
+ * Opus 4.6 has 1M context by default; the suffix just tells the SDK about it.
+ */
+function resolveModelForSdk(model: string): string {
+  if (model.includes('opus-4-6') && !model.includes('[1m]')) {
+    return `${model}[1m]`;
+  }
+  return model;
+}
 
 function mergeHooks(
   userHooks: Options['hooks'],
@@ -62,19 +82,24 @@ export class SdkBridge {
       includePartialMessages: true,
       hooks: mergeHooks(this.sdkOptions.hooks as Options['hooks']),
     };
+    // Resolve model suffix for 1M context models
+    if (typeof opts.model === 'string') {
+      opts.model = resolveModelForSdk(opts.model);
+    }
     return opts;
   }
 
   /**
    * Start a fresh SDK session with the given prompt.
    */
-  async startSession(prompt: string): Promise<{
+  async startSession(prompt: string, images?: ImageAttachment[]): Promise<{
     sessionId: SdkSessionId;
     query: Query;
     messages: AsyncGenerator<SDKMessage, void>;
   }> {
     const opts = this.buildOptions();
-    const q = query({ prompt, options: opts as Options });
+    const sdkPrompt = buildSdkPrompt(prompt, images);
+    const q = query({ prompt: sdkPrompt, options: opts as Options });
 
     const first = await q.next();
     if (first.done) throw new Error('Session ended immediately');
@@ -94,7 +119,7 @@ export class SdkBridge {
   /**
    * Resume an existing SDK session with a new user message.
    */
-  async resumeSession(sessionId: SdkSessionId, prompt: string): Promise<{
+  async resumeSession(sessionId: SdkSessionId, prompt: string, images?: ImageAttachment[]): Promise<{
     sessionId: SdkSessionId;
     query: Query;
     messages: AsyncGenerator<SDKMessage, void>;
@@ -102,7 +127,8 @@ export class SdkBridge {
     const opts = this.buildOptions();
     opts.resume = sessionId;
 
-    const q = query({ prompt, options: opts as Options });
+    const sdkPrompt = buildSdkPrompt(prompt, images);
+    const q = query({ prompt: sdkPrompt, options: opts as Options });
 
     const first = await q.next();
     if (first.done) throw new Error('Session ended immediately');
@@ -163,6 +189,49 @@ export class SdkBridge {
 
     return { summarizerSessionId, summary };
   }
+}
+
+/**
+ * Build the prompt for query() — plain string when text-only,
+ * AsyncIterable<SDKUserMessage> when images are attached.
+ */
+function buildSdkPrompt(
+  text: string,
+  images?: ImageAttachment[],
+): string | AsyncIterable<SDKUserMessage> {
+  if (!images || images.length === 0) {
+    return text;
+  }
+
+  const content: (TextBlockParam | ImageBlockParam)[] = [];
+
+  if (text) {
+    content.push({ type: 'text', text });
+  }
+
+  for (const img of images) {
+    content.push({
+      type: 'image',
+      source: {
+        type: 'base64',
+        data: img.data,
+        media_type: img.mimeType as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp',
+      },
+    });
+  }
+
+  const userMessage: SDKUserMessage = {
+    type: 'user',
+    message: { role: 'user', content },
+    parent_tool_use_id: null,
+    session_id: '',
+  };
+
+  async function* singleMessage(): AsyncGenerator<SDKUserMessage> {
+    yield userMessage;
+  }
+
+  return singleMessage();
 }
 
 /**
