@@ -1,6 +1,6 @@
 import { test, expect } from 'claude-code/testing'
 import type { SessionMessage } from 'claude-code'
-import { plan, shouldRoll, MARKER, CONFIG } from './plan'
+import { plan, configFor, MARKER, CONFIG, LARGE_CONFIG } from './plan'
 
 let h = 0
 const user = (text: string): SessionMessage => ({ role: 'user', text, toolUses: [], handle: `h${h++}` })
@@ -22,6 +22,9 @@ const turns = (from: number, to: number, tokens = 5_000) => {
   return out
 }
 const conversation = (n: number) => [user('hi QwQ'), asst('hi!!'), ...turns(1, n)]
+
+// The session's model window, as $.session.usage() reports it.
+const windowOf = (window: number) => () => ({ value: { startedAt: 0, context: { window } } }) as any
 
 // Stands in for the engine's summarizer: one summary message per chunk.
 const summarizer = (seen: { chunk?: readonly SessionMessage[]; told?: string }[] = []) =>
@@ -61,6 +64,7 @@ test('too little to roll up: no plan', () => {
 
 test('the summarizer sees only the chunk, told what surrounds it', async ($, on) => {
   const seen: { chunk?: readonly SessionMessage[]; told?: string }[] = []
+  on('session.usage', windowOf(200_000))
   on('session.compact', summarizer(seen) as any)
   const msgs = conversation(40)
   const p = plan(msgs)!
@@ -80,6 +84,7 @@ test('the summarizer sees only the chunk, told what surrounds it', async ($, on)
 
 test('summaries accumulate as blocks; the head never moves; old blocks are not re-summarized', async ($, on) => {
   const seen: { chunk?: readonly SessionMessage[]; told?: string }[] = []
+  on('session.usage', windowOf(200_000))
   on('session.compact', summarizer(seen) as any)
   let msgs: readonly SessionMessage[] = conversation(40)
   const headHandles = plan(msgs)!.head.map(m => m.handle)
@@ -106,22 +111,35 @@ test('summary blocks past their budget are merged into the next chunk', () => {
   expect(p.head.length).toBe(2)
 })
 
-test('our own trigger skips when there is nothing to roll; precompute skipped; subagents untouched', async ($, on) => {
+test('nothing to roll falls back to plain compaction; precompute skipped; subagents untouched', async ($, on) => {
   let calls = 0
+  on('session.usage', windowOf(200_000))
   on('session.compact', (_$, e) => (calls++, { messages: e.messages }))
-  const small = await $.session.compact({ trigger: 'plugin', messages: conversation(3) })
-  expect(typeof small.skip).toBe('string')
+  const small = await $.session.compact({ trigger: 'auto', messages: conversation(3) })
+  if (small.skip !== undefined) throw new Error(small.skip)
+  expect(small.messages.length).toBe(conversation(3).length)
   const pre = await $.session.compact({ trigger: 'precompute', messages: conversation(40) })
   expect(typeof pre.skip).toBe('string')
   const sub = await $.session.compact({ trigger: 'auto', agentId: 'agent-1', messages: conversation(40) })
   if (sub.skip !== undefined) throw new Error(sub.skip)
   expect(sub.messages.length).toBe(conversation(40).length)
-  expect(calls).toBe(1)
+  expect(calls).toBe(2)
 })
 
-test('rolls between turns only past the trigger and with a chunk worth summarizing', () => {
-  expect(shouldRoll(CONFIG.triggerTokens - 1, conversation(40))).toBe(false)
-  expect(shouldRoll(CONFIG.triggerTokens, conversation(40))).toBe(true)
-  expect(shouldRoll(CONFIG.triggerTokens, conversation(3))).toBe(false)
-  expect(shouldRoll(undefined, conversation(40))).toBe(false)
+test('on a 1M window, far more stays verbatim', async ($, on) => {
+  on('session.usage', windowOf(1_000_000))
+  on('session.compact', summarizer() as any)
+  const msgs = conversation(120) // ~600k
+  const big = plan(msgs, LARGE_CONFIG)!
+  const out = await $.session.compact({ trigger: 'auto', messages: msgs })
+  if (out.skip !== undefined) throw new Error(out.skip)
+  expect(out.messages.length).toBe(big.head.length + 2 + big.tail.length)
+  expect(big.tokens.tail > CONFIG.tailTokens * 4).toBe(true)
+  expect(big.tokens.tail <= LARGE_CONFIG.tailTokens).toBe(true)
+})
+
+test('picks the larger budgets on a 1M window', () => {
+  expect(configFor(1_000_000)).toBe(LARGE_CONFIG)
+  expect(configFor(200_000)).toBe(CONFIG)
+  expect(configFor(undefined)).toBe(CONFIG)
 })

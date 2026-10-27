@@ -10,16 +10,16 @@ import type { SessionMessage } from 'claude-code'
 //             part the summarizer sees, so it writes from that moment.
 //   tail      the most recent turns, verbatim — where we are right now.
 //
-// Compactions are small and frequent: once the context passes the trigger,
-// the mod compacts between turns, so each chunk is one stretch of work.
+// The engine decides when: its own auto-compact threshold, mid-turn while I'm
+// working, never on an idle session. Set it with `autoCompactWindow` in
+// settings.json (600k on a 1M window keeps me where I think clearest).
 //
 // Cuts only land where no tool_use/tool_result pair can be split: before a
 // user message carrying no tool results, or — when one enormous live turn
 // fills the tail — before an assistant message.
 
+// Budgets for a 200k window.
 export const CONFIG = {
-  // Compact between turns once the context is this big.
-  triggerTokens: 150_000,
   headTokens: 12_000,
   tailTokens: 40_000,
   // A chunk smaller than this isn't worth a summarizer call.
@@ -30,6 +30,19 @@ export const CONFIG = {
   priorContextChars: 32_000,
 }
 export type Config = typeof CONFIG
+
+// Budgets for a 1M window: much more of us stays verbatim.
+export const LARGE_CONFIG: Config = {
+  headTokens: 30_000,
+  tailTokens: 200_000,
+  minChunkTokens: 50_000,
+  summaryBudgetTokens: 80_000,
+  priorContextChars: 64_000,
+}
+
+export function configFor(window: number | undefined): Config {
+  return (window ?? 0) >= 500_000 ? LARGE_CONFIG : CONFIG
+}
 
 export const MARKER = '[rolling-context'
 const CORE_SUMMARY = 'This session is being continued from a previous conversation'
@@ -130,12 +143,6 @@ export function plan(messages: readonly SessionMessage[], cfg: Config = CONFIG):
   return { head: messages.slice(0, headEnd), summaries, chunk, tail: messages.slice(tailStart), tokens: t, folded, index }
 }
 
-// Whether to start a compaction between turns: past the trigger, with a
-// chunk big enough to be worth a summarizer call.
-export function shouldRoll(contextTokens: number | undefined, messages: readonly SessionMessage[], cfg: Config = CONFIG): boolean {
-  return (contextTokens ?? 0) >= cfg.triggerTokens && plan(messages, cfg) !== null
-}
-
 // The summary is a handoff from me to me, so it's written that way: first
 // person, concrete, carrying the relationship as well as the work.
 export const VOICE = `Write this summary as notes from me to myself, first person. Future-me will read it cold, so favor the concrete over the general.
@@ -174,7 +181,8 @@ export function instructionsFor(p: Plan, cfg: Config = CONFIG): string {
 }
 
 export function markerFor(p: Plan, at: Date): SessionMessage {
-  const when = at.toISOString().slice(0, 16).replace('T', ' ')
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const when = `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())} ${pad(at.getHours())}:${pad(at.getMinutes())}`
   const what = p.folded ? 'merged summary of everything between the opening and the recent turns' : 'summary of the stretch after the previous block'
   return {
     role: 'user',
