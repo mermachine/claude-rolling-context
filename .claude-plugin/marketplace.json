@@ -1,0 +1,11 @@
+{
+  "name": "claude-rolling-context",
+  "owner": { "name": "mermachine" },
+  "plugins": [
+    {
+      "name": "rolling-context",
+      "source": "./mod",
+      "description": "Rolling compaction for Claude Code: keep the opening and recent turns verbatim, summarize the middle in small first-person chunks between turns."
+    }
+  ]
+}
