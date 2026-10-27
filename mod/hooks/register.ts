@@ -1,5 +1,5 @@
 import type { Register } from 'claude-code'
-import { plan, configFor, instructionsFor, markerFor, withVoice } from './plan'
+import { plan, configFor, calibrate, instructionsFor, markerFor, withVoice, withoutPretending } from './plan'
 
 const k = (n: number) => `${Math.round(n / 1000)}k`
 
@@ -13,8 +13,15 @@ export const register: Register = (on) => {
     // Subagents and forks keep the engine's plain compaction, in our voice.
     if (e.agentId !== undefined || e.trigger === 'precompute') return next({ ...e, instructions: withVoice(e.instructions) })
 
-    const cfg = configFor((await $.session.usage()).context.window)
-    const p = plan(e.messages, cfg)
+    // Real token counts: the engine's last-response total, minus what isn't
+    // conversation (system prompt, tools, memory), estimated locally.
+    const { context } = await $.session.usage({ breakdown: 'summary' })
+    const overhead = (context.breakdown?.categories ?? [])
+      .filter(c => c.kind === 'used' && !/^messages$/i.test(c.name))
+      .reduce((a, c) => a + c.tokens, 0)
+    const scale = calibrate(context.tokens, overhead, e.messages)
+    const cfg = configFor(context.window)
+    const p = plan(e.messages, cfg, scale)
     if (!p) return next({ ...e, instructions: withVoice(e.instructions) })
 
     const instructions = withVoice(e.instructions, instructionsFor(p, cfg))
@@ -22,12 +29,12 @@ export const register: Register = (on) => {
     if (result.skip !== undefined) return result
 
     $.ui.log(
-      `rolling-context: block ${p.folded ? '1 (merged)' : p.index} summarizes ${p.chunk.length} msgs (~${k(p.tokens.chunk)}); ` +
+      `rolling-context: (tokens ×${scale.toFixed(2)} vs chars/4) block ${p.folded ? '1 (merged)' : p.index} summarizes ${p.chunk.length} msgs (~${k(p.tokens.chunk)}); ` +
         `verbatim: ${p.head.length} opening (~${k(p.tokens.head)}) + ${p.tail.length} recent (~${k(p.tokens.tail)})`,
     )
     return {
       ...result,
-      messages: [...p.head, ...p.summaries, markerFor(p, new Date()), ...result.messages, ...p.tail],
+      messages: [...p.head, ...p.summaries, markerFor(p, new Date()), ...result.messages.map(withoutPretending), ...p.tail],
       tokensAfter: undefined,
     }
   }).catch(($, e, next) => {

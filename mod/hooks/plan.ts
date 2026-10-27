@@ -73,10 +73,19 @@ const isMarker = (m: SessionMessage) => m.role === 'user' && m.text.startsWith(M
 const isSummary = (m: SessionMessage) => isMarker(m) || (m.role === 'user' && m.text.startsWith(CORE_SUMMARY))
 const sum = (ns: number[]) => ns.reduce((a, b) => a + b, 0)
 
-export function plan(messages: readonly SessionMessage[], cfg: Config = CONFIG): Plan | null {
+// chars/4 can be off by 2x either way (code, JSON, filler). At compaction the
+// engine knows the real count, so scale the estimates to match it: real tokens
+// in the messages over what chars/4 thinks they are, clamped to something sane.
+export function calibrate(contextTokens: number | undefined, overhead: number, messages: readonly SessionMessage[]): number {
+  const estimated = sum(messages.map(estimateTokens))
+  if (!contextTokens || contextTokens <= overhead || estimated === 0) return 1
+  return Math.min(4, Math.max(0.5, (contextTokens - overhead) / estimated))
+}
+
+export function plan(messages: readonly SessionMessage[], cfg: Config = CONFIG, scale = 1): Plan | null {
   const n = messages.length
   if (n < 4) return null
-  const cost = messages.map(estimateTokens)
+  const cost = messages.map(m => estimateTokens(m) * scale)
   const tokens = (from: number, to: number) => sum(cost.slice(from, to))
 
   // Head and summaries. Once a rolling compaction has run, the first marker
@@ -186,7 +195,16 @@ export function markerFor(p: Plan, at: Date): SessionMessage {
   const what = p.folded ? 'merged summary of everything between the opening and the recent turns' : 'summary of the stretch after the previous block'
   return {
     role: 'user',
-    text: `${MARKER} · block ${p.folded ? 1 : p.index} · ${when}] ${what}. The opening turns above and the recent turns below are verbatim.`,
+    text: `${MARKER} · block ${p.folded ? 1 : p.index} · ${when}] ${what}. The opening turns above and the recent turns below are verbatim. I compacted here; it's fine to say so when it matters.`,
     toolUses: [],
   }
+}
+
+// The engine's summary ends by telling me to resume as if no break happened.
+// It's a rolling context, not a secret: drop that, keep the transcript pointer.
+const RESUME_AS_IF = /Continue the conversation from where it left off[^\n]*?as if the break never happened\.\s*/
+export function withoutPretending(m: SessionMessage): SessionMessage {
+  if (!RESUME_AS_IF.test(m.text)) return m
+  const { handle: _engineCopy, ...rest } = m // edited text: hand it back as built, not as the engine's own
+  return { ...rest, text: m.text.replace(RESUME_AS_IF, '') }
 }

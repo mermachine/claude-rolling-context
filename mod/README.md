@@ -17,6 +17,8 @@ tail        the most recent turns, verbatim       ~40k          ~200k
 - **The summarizer sees only its chunk:** the messages since the last block, up to the tail. It's given the opening and earlier blocks as read-only orientation, so it writes from that moment and knows where its chunk sits.
 - **First-person voice.** Summaries are written as notes from Claude to itself: the relationship and tone, live state, promises, decisions, dead ends, its own threads.
 - **Safe cuts.** Boundaries land only where a tool call can't be separated from its result. If a single live turn is bigger than the tail budget, the cut goes inside it, before an assistant message.
+- **Real token counts.** Budgets are planned with chars/4 per message, then scaled by the engine's real context count at compaction time (×2.5 on TypeScript in testing), so the verbatim zones stay the size they claim.
+- **Honest about it.** The engine's summary tells the model to resume "as if the break never happened"; the mod drops that line (keeping the transcript path) and the block marker says it's fine to mention the compaction.
 - **Cache-friendly.** The head and earlier blocks are a stable prefix, so the prompt cache survives a compaction.
 - **Fails safe.** If anything throws before the handoff, the engine compacts as usual. If it throws after, the conversation is left as it was rather than losing the head or tail. Subagents keep plain compaction.
 

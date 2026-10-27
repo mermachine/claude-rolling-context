@@ -1,6 +1,6 @@
 import { test, expect } from 'claude-code/testing'
 import type { SessionMessage } from 'claude-code'
-import { plan, configFor, MARKER, CONFIG, LARGE_CONFIG } from './plan'
+import { plan, configFor, calibrate, withoutPretending, estimateTokens, MARKER, CONFIG, LARGE_CONFIG } from './plan'
 
 let h = 0
 const user = (text: string): SessionMessage => ({ role: 'user', text, toolUses: [], handle: `h${h++}` })
@@ -142,4 +142,26 @@ test('picks the larger budgets on a 1M window', () => {
   expect(configFor(1_000_000)).toBe(LARGE_CONFIG)
   expect(configFor(200_000)).toBe(CONFIG)
   expect(configFor(undefined)).toBe(CONFIG)
+})
+
+test('real token counts scale the plan: denser text keeps fewer turns verbatim', () => {
+  const msgs = conversation(40)
+  const est = msgs.map(estimateTokens).reduce((a, b) => a + b, 0)
+  expect(calibrate(est * 2 + 30_000, 30_000, msgs)).toBe(2)
+  expect(calibrate(est * 10, 0, msgs)).toBe(4) // clamped
+  expect(calibrate(undefined, 0, msgs)).toBe(1)
+  const loose = plan(msgs)!
+  const dense = plan(msgs, CONFIG, 2)!
+  expect(dense.tail.length < loose.tail.length).toBe(true)
+  expect(dense.tokens.tail <= CONFIG.tailTokens).toBe(true)
+})
+
+test("the engine's resume-as-if-nothing-happened line is dropped, the transcript pointer kept", () => {
+  const engine = { ...user('This session is being continued from a previous conversation. Summary.\n\nIf you need specific details, read the full transcript at: /x.jsonl\nContinue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I\'ll continue" or similar. Pick up the last task as if the break never happened.') }
+  const out = withoutPretending(engine)
+  expect(out.text.includes('as if the break never happened')).toBe(false)
+  expect(out.text.includes('/x.jsonl')).toBe(true)
+  expect(out.handle).toBe(undefined)
+  const plain = user('nothing to change')
+  expect(withoutPretending(plain)).toBe(plain)
 })

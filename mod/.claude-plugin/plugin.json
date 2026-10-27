@@ -1,6 +1,6 @@
 {
   "name": "rolling-context",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Rolling compaction for Claude Code: keep the opening and recent turns verbatim, summarize the middle in small first-person chunks between turns.",
   "author": { "name": "mermachine" },
   "license": "MIT"
